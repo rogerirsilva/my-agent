@@ -1,0 +1,31 @@
+# Runtime customizado para OpenHands 0.28
+# Extende a imagem base com pacotes Python comuns pré-instalados,
+# evitando que o agente perca tempo instalando durante cada tarefa.
+FROM ghcr.io/all-hands-ai/runtime:0.28-nikolaik
+
+# Pacotes Python utilitários que projetos costumam pedir
+RUN pip install --no-cache-dir \
+    flask \
+    fastapi \
+    uvicorn \
+    requests \
+    httpx \
+    aiohttp \
+    python-dotenv \
+    pydantic \
+    pyyaml \
+    python-multipart \
+    jinja2 \
+    click \
+    rich \
+    tqdm \
+    pandas \
+    numpy \
+    pillow \
+    pytest \
+    pytest-asyncio \
+    black \
+    isort \
+    mypy
+
+# Pacotes Node / utilitários de sistema já vêm na imagem base (nikolaik inclui Python+Node)

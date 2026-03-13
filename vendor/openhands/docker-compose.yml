@@ -16,6 +16,15 @@
 # Swagger:       http://localhost:3000/openapi.json
 
 services:
+  # Imagem runtime customizada com pacotes Python pré-instalados
+  # Build: docker compose build runtime
+  runtime:
+    image: my-agent-runtime:0.28
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    profiles: ["build"]   # não inicia como serviço; só serve para buildar
+
   openhands:
     image: ghcr.io/all-hands-ai/openhands:0.28
     container_name: openhands
@@ -24,7 +33,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      SANDBOX_RUNTIME_CONTAINER_IMAGE: ghcr.io/all-hands-ai/runtime:0.28-nikolaik
+      SANDBOX_RUNTIME_CONTAINER_IMAGE: my-agent-runtime:0.28
       LOG_ALL_EVENTS: "true"
       OPENHANDS_LLM_MODEL: ${OPENHANDS_LLM_MODEL:-groq/llama-3.3-70b-versatile}
       OPENHANDS_LLM_API_KEY: ${OPENHANDS_LLM_API_KEY}

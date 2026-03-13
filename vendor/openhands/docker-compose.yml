@@ -26,16 +26,28 @@ services:
     environment:
       SANDBOX_RUNTIME_CONTAINER_IMAGE: ghcr.io/all-hands-ai/runtime:0.28-nikolaik
       LOG_ALL_EVENTS: "true"
-      OPENHANDS_LLM_MODEL: ${OPENHANDS_LLM_MODEL:-anthropic/claude-3-5-sonnet-20241022}
+      OPENHANDS_LLM_MODEL: ${OPENHANDS_LLM_MODEL:-groq/llama-3.3-70b-versatile}
       OPENHANDS_LLM_API_KEY: ${OPENHANDS_LLM_API_KEY}
       OPENHANDS_LLM_BASE_URL: ${OPENHANDS_LLM_BASE_URL:-}
-      # Necessário no Windows: mapear o socket Docker via TCP
       SANDBOX_LOCAL_RUNTIME_URL: ${SANDBOX_LOCAL_RUNTIME_URL:-}
     volumes:
-      # Windows: Docker Desktop expõe o socket automaticamente para containers
       - /var/run/docker.sock:/var/run/docker.sock
       - openhands-state:/root/.openhands
       - ${WORKSPACE_DIR:-../../data/openhands-workspace}:/opt/workspace_base
+    networks:
+      - openhands-net
+
+  # Ollama — modelo local, sem API key (use: docker compose --profile ollama up -d)
+  # Após subir: docker exec ollama ollama pull llama3.2
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
     networks:
       - openhands-net
 
@@ -45,3 +57,4 @@ networks:
 
 volumes:
   openhands-state:
+  ollama-data:

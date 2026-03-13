@@ -362,6 +362,7 @@ def settings_ui():
   </div>
 
   <button class="apply-btn" id="applyBtn" onclick="applySettings()">Aplicar configuração</button>
+  <button class="apply-btn" id="backBtn" onclick="location.reload()" style="display:none;background:var(--accent2)">↩ Configurar outro modelo</button>
   <div class="status" id="status"></div>
 </div>
 
@@ -481,8 +482,14 @@ async function applySettings() {{
     setStatus(`✅ Modelo alterado para ${{data.model}} — ${{sync}}`, 'ok');
     // Atualiza badge
     document.getElementById('activeBadge').innerHTML = `🏠 Ativo: <strong style="margin-left:4px">${{data.model}}</strong>`;
+    // Mostra botão "Configurar outro modelo"
+    document.getElementById('backBtn').style.display = 'block';
+    btn.style.display = 'none';
   }} catch(e) {{
     setStatus('Erro: ' + e.message, 'err');
+    btn.disabled = false;
+    btn.textContent = 'Aplicar configuração';
+    return;
   }}
 
   btn.disabled = false;

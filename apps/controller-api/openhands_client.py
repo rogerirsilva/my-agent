@@ -14,6 +14,7 @@ Inicia o servidor com:
 """
 
 import os
+import json
 import time
 import requests
 from pathlib import Path
@@ -28,6 +29,9 @@ OPENHANDS_LLM_BASE_URL = os.getenv("OPENHANDS_LLM_BASE_URL", "")
 
 # URL local do Ollama (acessível do host; dentro do Docker usa http://ollama:11434)
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+
+# Arquivo de configuração de runtime (persistido entre requisições)
+_CONFIG_FILE = Path(os.getenv("DATA_DIR", "../../data")).resolve() / "llm_config.json"
 
 _UNAVAILABLE_MSG = (
     "OpenHands inacessível em {url}.\n"
@@ -47,25 +51,50 @@ def _is_available() -> bool:
 
 
 def list_ollama_models() -> list[str]:
-    """Retorna modelos instalados no Ollama, ou lista vazia se indisponível."""
+    """Retorna modelos instalados no Ollama, excluindo modelos de embedding."""
     try:
         r = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
         if r.ok:
-            return [m["name"] for m in r.json().get("models", [])]
+            # Exclui modelos de embedding (nomic-embed, etc.)
+            skip = {"nomic-embed", "mxbai-embed", "all-minilm", "embed"}
+            return [
+                m["name"] for m in r.json().get("models", [])
+                if not any(s in m["name"].lower() for s in skip)
+            ]
     except Exception:
         pass
     return []
 
 
+def load_llm_config() -> dict:
+    """Lê configuração LLM do arquivo de runtime. Retorna dict vazio se não existir."""
+    try:
+        if _CONFIG_FILE.exists():
+            return json.loads(_CONFIG_FILE.read_text("utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def save_llm_config(model: str, api_key: str, base_url: str) -> None:
+    """Persiste configuração LLM no arquivo de runtime."""
+    _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG_FILE.write_text(
+        json.dumps({"model": model, "api_key": api_key, "base_url": base_url}, indent=2),
+        "utf-8",
+    )
+
+
 def _resolve_model() -> tuple[str, str, str]:
     """
     Resolve modelo, api_key e base_url efetivos.
-    Se OPENHANDS_LLM_MODEL == 'ollama/auto', escolhe o primeiro modelo disponível no Ollama.
+    Prioridade: 1) llm_config.json (runtime) 2) env vars 3) auto-detect Ollama.
     Retorna (model, api_key, base_url).
     """
-    model    = OPENHANDS_LLM_MODEL
-    api_key  = OPENHANDS_LLM_KEY
-    base_url = OPENHANDS_LLM_BASE_URL
+    cfg      = load_llm_config()
+    model    = cfg.get("model")    or OPENHANDS_LLM_MODEL
+    api_key  = cfg.get("api_key")  or OPENHANDS_LLM_KEY
+    base_url = cfg.get("base_url") or OPENHANDS_LLM_BASE_URL
 
     # Auto-detecta modelo Ollama
     if model == "ollama/auto":

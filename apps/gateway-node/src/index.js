@@ -92,7 +92,8 @@ bot.start((ctx) =>
     "/exec \\<secret\\> \\<comando\\> — executa no host \\(via controller\\)\n" +
     "/think \\<tarefa\\> — envia para o OpenHands\n" +
     "/tasks — últimas tarefas\n" +
-    "/providers — provedores LLM disponíveis",
+    "/providers — provedores LLM disponíveis\n" +
+    "/setmodel — selecionar modelo Ollama LOCAL",
     { parse_mode: "MarkdownV2" }
   )
 );
@@ -217,18 +218,80 @@ bot.command("providers", async (ctx) => {
   msg += "\n";
 
   if (ollama.available) {
-    msg += `*Ollama* (local) — ${ollama.models.length} modelo(s):\n`;
-    msg += ollama.models.map((m) => `  \u2022 \`${m}\``).join("\n");
-    msg += "\n\nPara usar: defina \`OPENHANDS_LLM_MODEL=ollama/<nome>\` no controller .env";
+    msg += `*Ollama LOCAL* — ${ollama.models.length} modelo(s):\n`;
+    msg += ollama.models.map((m) => {
+      const name = m.name || m;
+      const isActive = active.model === `ollama/${name}` || active.model === name;
+      return `  ${isActive ? "✅" : "•"} \`${name}\``;
+    }).join("\n");
+    msg += "\n\nUse /setmodel para trocar o modelo ativo.";
   } else {
-    msg += "*Ollama* (local) — nenhum modelo instalado.\n";
-    msg += "Execute para baixar um modelo:\n";
-    msg += "```\ndocker exec ollama ollama pull qwen2.5:7b\n```";
+    msg += "*Ollama LOCAL* — nenhum modelo LLM instalado.\n";
+    msg += "Execute para baixar:\n```\nollama pull llama3\n```";
   }
 
   await ctx.reply(msg, { parse_mode: "Markdown" });
 });
+
+bot.command("setmodel", async (ctx) => {
+  let data;
+  try {
+    data = await controllerFetch("/providers");
+  } catch (err) {
+    return ctx.reply("⚠️ Controller offline.");
+  }
+
+  const ollama = data.ollama || {};
+  const active = data.active || {};
+
+  if (!ollama.available || !ollama.models.length) {
+    return ctx.reply(
+      "❌ Nenhum modelo Ollama LOCAL instalado.\n\nInstale com:\n```\nollama pull llama3\n```",
+      { parse_mode: "Markdown" }
+    );
+  }
+
+  // Monta teclado: 1 botão por linha, marca o modelo ativo com ✅
+  const buttons = ollama.models.map((m) => {
+    const isActive = active.model === `ollama/${m.name}` || active.model === m.name;
+    const label = isActive ? `✅ ${m.name}` : m.name;
+    return [Markup.button.callback(label, `setmodel:${m.name}`)];
+  });
+
+  await ctx.reply(
+    `*Selecione o modelo Ollama LOCAL:*\n\nAtivo: \`${active.model}\`\n_Sem necessidade de API Key_`,
+    {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard(buttons),
+    }
+  );
+});
+
 // ── Callbacks teclado inline ──────────────────────────────────────────────────
+
+bot.action(/^setmodel:(.+)$/, async (ctx) => {
+  const modelName = ctx.match[1];
+  await ctx.answerCbQuery("\u23f3 Configurando...");
+  try {
+    const result = await controllerFetch("/settings/llm", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "ollama",
+        model: modelName,
+      }),
+    });
+    const syncIcon = result.openhands_sync === "ok" ? "\u2705" : "\u26a0\ufe0f";
+    await ctx.editMessageText(
+      `\uD83D\uDCBB *Modelo alterado!*\n\n` +
+      `Modelo: \`${result.model}\`\n` +
+      `${syncIcon} OpenHands: ${result.openhands_sync}\n\n` +
+      `_Sem API Key \u2014 rodando 100% local_`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (err) {
+    await ctx.editMessageText("\u26a0\ufe0f Erro ao alterar modelo: " + err.message.slice(0, 200));
+  }
+});
 
 bot.action(/^approve:(.+)$/, async (ctx) => {
   const taskId = ctx.match[1];

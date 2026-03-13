@@ -234,25 +234,69 @@ def health():
 @app.get("/providers", dependencies=[Protected])
 def list_providers():
     """Lista provedores LLM disponíveis: Ollama local + configuração ativa do OpenHands."""
-    from openhands_client import list_ollama_models, _resolve_model, OLLAMA_HOST
+    from openhands_client import list_ollama_models, _resolve_model, OLLAMA_HOST, load_llm_config
     model, _, base_url = _resolve_model()
     ollama_models = list_ollama_models()
+    cfg = load_llm_config()
     return {
         "active": {
             "model": model,
             "base_url": base_url or "(padrão do provedor)",
             "provider": "ollama" if model.startswith("ollama/") else "cloud",
+            "source": "runtime" if cfg else "env",
         },
         "ollama": {
             "available": bool(ollama_models),
             "host": OLLAMA_HOST,
-            "models": ollama_models,
+            "models": [{"name": m, "label": m} for m in ollama_models],
             "hint": (
-                "Nenhum modelo instalado. Execute:\n"
-                "  docker exec ollama ollama pull qwen2.5:7b\n"
-                "Para usar: defina OPENHANDS_LLM_MODEL=ollama/qwen2.5:7b no controller .env"
+                "Nenhum modelo LLM instalado. Execute:\n"
+                "  ollama pull llama3\n"
+                "  ollama pull mistral"
             ) if not ollama_models else None,
         },
+    }
+
+
+class LlmSettings(BaseModel):
+    provider: str          # "ollama" | "groq" | "openai" | etc
+    model: str             # ex: "llama3:latest"  ou  "groq/llama-3.3-70b-versatile"
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+@app.post("/settings/llm", dependencies=[Protected])
+def update_llm_settings(body: LlmSettings):
+    """
+    Altera o LLM ativo em tempo real — persiste no DATA_DIR/llm_config.json
+    e reconfigura o OpenHands imediatamente.
+    """
+    from openhands_client import save_llm_config, _ensure_settings, _is_available, OLLAMA_HOST
+
+    # Normaliza campos conforme provedor
+    if body.provider == "ollama":
+        model    = f"ollama/{body.model}" if not body.model.startswith("ollama/") else body.model
+        api_key  = body.api_key or "ollama"
+        base_url = body.base_url or "http://host.docker.internal:11434"
+    else:
+        model    = body.model
+        api_key  = body.api_key or ""
+        base_url = body.base_url or ""
+
+    save_llm_config(model, api_key, base_url)
+    _audit(f"LLM_CHANGED model={model} provider={body.provider}")
+
+    # Empurra para OpenHands se estiver disponível
+    oh_status = "skipped"
+    if _is_available():
+        err = _ensure_settings()
+        oh_status = "ok" if err is None else f"error: {err}"
+
+    return {
+        "model": model,
+        "base_url": base_url,
+        "provider": body.provider,
+        "openhands_sync": oh_status,
     }
 
 

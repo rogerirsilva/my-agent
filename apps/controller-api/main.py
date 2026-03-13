@@ -18,6 +18,7 @@ from threading import Lock
 
 import yaml
 import requests
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse
@@ -217,7 +218,25 @@ def _execute_task_background(task_id: str) -> None:
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="my-agent controller", version="0.2.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Sincroniza as settings de LLM com o OpenHands ao iniciar o controller."""
+    try:
+        from openhands_client import _ensure_settings, _is_available
+        if _is_available():
+            err = _ensure_settings()
+            if err:
+                print(f"[startup] Aviso ao sincronizar OpenHands: {err}")
+            else:
+                print("[startup] OpenHands sincronizado com as settings de LLM.")
+        else:
+            print("[startup] OpenHands indisponível, pulando sync.")
+    except Exception as e:
+        print(f"[startup] Erro ao sincronizar OpenHands: {e}")
+    yield
+
+
+app = FastAPI(title="my-agent controller", version="0.2.0", lifespan=lifespan)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

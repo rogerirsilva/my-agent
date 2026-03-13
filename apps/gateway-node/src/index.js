@@ -2,121 +2,232 @@ import "dotenv/config";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { Telegraf } from "telegraf";
+import { Telegraf, Markup } from "telegraf";
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ALLOWED_USER_ID = Number(process.env.ALLOWED_TELEGRAM_USER_ID || "0");
-const SHARED_SECRET = process.env.BOT_SHARED_SECRET || "";
-const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), "../../data");
-const LOG_PATH = path.join(DATA_DIR, "audit.log");
+const BOT_TOKEN        = process.env.TELEGRAM_BOT_TOKEN;
+const ALLOWED_USER_ID  = Number(process.env.ALLOWED_TELEGRAM_USER_ID || "0");
+const SHARED_SECRET    = process.env.BOT_SHARED_SECRET || "";
+const CONTROLLER_URL   = (process.env.CONTROLLER_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+const CONTROLLER_KEY   = process.env.CONTROLLER_API_KEY || "";
+const DATA_DIR         = process.env.DATA_DIR || path.resolve(process.cwd(), "../../data");
+const LOG_PATH         = path.join(DATA_DIR, "audit.log");
 
 if (!BOT_TOKEN) {
-  console.error("Missing TELEGRAM_BOT_TOKEN");
+  console.error("TELEGRAM_BOT_TOKEN ausente no .env");
   process.exit(1);
 }
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 function audit(line) {
   const ts = new Date().toISOString();
-  fs.appendFileSync(LOG_PATH, `[${ts}] ${line}\n`, "utf8");
+  fs.appendFileSync(LOG_PATH, `[${ts}] BOT ${line}\n`, "utf8");
 }
 
 function isAllowed(ctx) {
-  const fromId = ctx.from?.id;
-  return fromId && fromId === ALLOWED_USER_ID;
-}
-
-function redactSecrets(s) {
-  if (!s) return s;
-  // very basic redaction
-  return s.replaceAll(SHARED_SECRET, "***");
+  return ctx.from?.id === ALLOWED_USER_ID;
 }
 
 function getStatus() {
-  const cpus = os.cpus();
   return {
     host: os.hostname(),
     platform: `${os.platform()} ${os.release()}`,
     arch: os.arch(),
     uptime_sec: Math.floor(os.uptime()),
-    loadavg: os.loadavg(),
-    cpus: cpus?.length || 0,
+    cpus: os.cpus()?.length || 0,
     totalmem_mb: Math.round(os.totalmem() / 1024 / 1024),
-    freemem_mb: Math.round(os.freemem() / 1024 / 1024)
+    freemem_mb: Math.round(os.freemem() / 1024 / 1024),
+    controller: CONTROLLER_URL,
   };
 }
 
-function runCommand(command) {
-  return new Promise((resolve) => {
-    const isWin = process.platform === "win32";
-    const shell = isWin ? "powershell.exe" : "bash";
-    const args = isWin
-      ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
-      : ["-lc", command];
+async function controllerFetch(endpoint, options = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (CONTROLLER_KEY) headers["x-api-key"] = CONTROLLER_KEY;
+  const res = await fetch(`${CONTROLLER_URL}${endpoint}`, {
+    ...options,
+    headers: { ...headers, ...(options.headers || {}) },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(`Controller ${res.status}`), { body, status: res.status });
+  return body;
+}
 
-    const child = spawn(shell, args, { stdio: ["ignore", "pipe", "pipe"] });
-
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
-
-    child.on("close", (code) => {
-      resolve({ code, stdout, stderr });
-    });
+async function submitTask(userId, chatId, type, command) {
+  return controllerFetch("/tasks", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, chat_id: chatId, type, command }),
   });
 }
 
+function formatResult(task) {
+  const icon = task.status === "done" ? "✅" : task.status === "failed" ? "❌" : "🔄";
+  const header = `${icon} Task \`${task.id.slice(0, 8)}\` — *${task.status}*`;
+  const body = task.result
+    ? "```\n" + task.result.slice(0, 3000) + "\n```"
+    : "";
+  return [header, body].filter(Boolean).join("\n");
+}
+
+// ── Bot ───────────────────────────────────────────────────────────────────────
+
 const bot = new Telegraf(BOT_TOKEN);
 
+// Auth middleware
 bot.use(async (ctx, next) => {
   if (!isAllowed(ctx)) {
-    if (ctx.message?.text) {
-      audit(`DENY user=${ctx.from?.id} text=${ctx.message.text}`);
-    }
-    return; // ignore silently
+    if (ctx.message?.text) audit(`DENY user=${ctx.from?.id}`);
+    return;
   }
   return next();
 });
 
-bot.start((ctx) => ctx.reply("OK. Use /status or /exec <secret> <command>"));
+bot.start((ctx) =>
+  ctx.reply(
+    "🤖 *my\\-agent* online\n\n" +
+    "Comandos:\n" +
+    "/status — informações do host\n" +
+    "/exec \\<secret\\> \\<comando\\> — executa no host \\(via controller\\)\n" +
+    "/think \\<tarefa\\> — envia para o OpenHands\n" +
+    "/tasks — últimas tarefas",
+    { parse_mode: "MarkdownV2" }
+  )
+);
 
 bot.command("status", async (ctx) => {
   const st = getStatus();
   audit(`STATUS user=${ctx.from.id}`);
-  await ctx.reply("```json\n" + JSON.stringify(st, null, 2) + "\n```", { parse_mode: "Markdown" });
+  await ctx.reply("```json\n" + JSON.stringify(st, null, 2) + "\n```", {
+    parse_mode: "Markdown",
+  });
 });
 
 bot.command("exec", async (ctx) => {
   const text = ctx.message.text || "";
-  // expected: /exec <secret> <command...>
   const parts = text.split(" ").slice(1);
   const secret = parts.shift() || "";
   const cmd = parts.join(" ").trim();
 
-  if (!cmd) return ctx.reply("Usage: /exec <secret> <command>");
+  if (!cmd) return ctx.reply("Uso: /exec <secret> <comando>");
 
   if (SHARED_SECRET && secret !== SHARED_SECRET) {
     audit(`EXEC_DENY_BAD_SECRET user=${ctx.from.id}`);
-    return ctx.reply("Denied.");
+    return ctx.reply("❌ Negado.");
   }
 
-  audit(`EXEC user=${ctx.from.id} cmd=${redactSecrets(cmd)}`);
+  audit(`EXEC_SUBMIT user=${ctx.from.id} cmd=${cmd.slice(0, 80)}`);
 
-  const res = await runCommand(cmd);
+  let task;
+  try {
+    task = await submitTask(ctx.from.id, ctx.chat.id, "exec", cmd);
+  } catch (err) {
+    if (err.status === 422) {
+      const reason = err.body?.detail?.reason || err.body?.detail || "política de segurança";
+      return ctx.reply(`🚫 Bloqueado: ${reason}`);
+    }
+    if (err.message.includes("fetch failed") || err.message.includes("ECONNREFUSED")) {
+      return ctx.reply("⚠️ Controller offline. Inicie com:\n```\ncd apps/controller-api\nuvicorn main:app\n```", { parse_mode: "Markdown" });
+    }
+    return ctx.reply(`⚠️ Erro: ${err.message.slice(0, 200)}`);
+  }
 
-  const out = [
-    `exit_code: ${res.code}`,
-    res.stdout ? `stdout:\n${res.stdout}` : "",
-    res.stderr ? `stderr:\n${res.stderr}` : ""
-  ]
-    .filter(Boolean)
-    .join("\n\n")
-    .slice(0, 3500);
+  if (task.status === "pending") {
+    await ctx.reply(
+      `⏳ Aguarda aprovação:\n\`${cmd.slice(0, 200)}\`\n\nTask: \`${task.id.slice(0, 8)}\``,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          Markup.button.callback("✅ Aprovar", `approve:${task.id}`),
+          Markup.button.callback("❌ Rejeitar", `reject:${task.id}`),
+        ]),
+      }
+    );
+  } else {
+    await ctx.reply(formatResult(task), { parse_mode: "Markdown" });
+  }
+});
 
-  await ctx.reply("```text\n" + out + "\n```", { parse_mode: "Markdown" });
+bot.command("think", async (ctx) => {
+  const prompt = ctx.message.text.replace(/^\/think\s*/i, "").trim();
+  if (!prompt) return ctx.reply("Uso: /think <tarefa ou pergunta para o agente>");
+
+  audit(`THINK_SUBMIT user=${ctx.from.id} prompt=${prompt.slice(0, 80)}`);
+
+  let task;
+  try {
+    task = await submitTask(ctx.from.id, ctx.chat.id, "openhands", prompt);
+  } catch (err) {
+    if (err.message.includes("fetch failed") || err.message.includes("ECONNREFUSED")) {
+      return ctx.reply("⚠️ Controller offline.");
+    }
+    return ctx.reply(`⚠️ Erro: ${err.message.slice(0, 200)}`);
+  }
+
+  if (task.status === "pending") {
+    await ctx.reply(
+      `🧠 Tarefa para OpenHands:\n_${prompt.slice(0, 300)}_\n\nTask: \`${task.id.slice(0, 8)}\``,
+      {
+        parse_mode: "Markdown",
+        ...Markup.inlineKeyboard([
+          Markup.button.callback("✅ Aprovar", `approve:${task.id}`),
+          Markup.button.callback("❌ Rejeitar", `reject:${task.id}`),
+        ]),
+      }
+    );
+  } else if (task.status === "approved" || task.status === "running") {
+    await ctx.reply(`🔄 Task \`${task.id.slice(0, 8)}\` em execução no OpenHands. Você será notificado quando concluir.`, { parse_mode: "Markdown" });
+  } else {
+    await ctx.reply(formatResult(task), { parse_mode: "Markdown" });
+  }
+});
+
+bot.command("tasks", async (ctx) => {
+  let tasks;
+  try {
+    tasks = await controllerFetch("/tasks?limit=5");
+  } catch (err) {
+    return ctx.reply("⚠️ Controller offline ou erro ao buscar tarefas.");
+  }
+  if (!tasks.length) return ctx.reply("Nenhuma tarefa ainda.");
+  const lines = tasks.map(
+    (t) => `• \`${t.id.slice(0, 8)}\` [${t.status}] ${t.type}: ${(t.command || "").slice(0, 60)}`
+  );
+  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+});
+
+// ── Callbacks teclado inline ──────────────────────────────────────────────────
+
+bot.action(/^approve:(.+)$/, async (ctx) => {
+  const taskId = ctx.match[1];
+  await ctx.answerCbQuery("⏳ Aprovando...");
+  try {
+    const task = await controllerFetch(`/tasks/${taskId}/approve`, { method: "POST" });
+    if (task.status === "approved" || task.status === "running") {
+      await ctx.editMessageText(
+        `🔄 Task \`${taskId.slice(0, 8)}\` aprovada — executando em background.\nVocê será notificado quando concluir.`,
+        { parse_mode: "Markdown" }
+      );
+    } else {
+      await ctx.editMessageText(formatResult(task), { parse_mode: "Markdown" });
+    }
+  } catch (err) {
+    await ctx.editMessageText(`⚠️ Erro ao aprovar: ${err.message.slice(0, 200)}`);
+  }
+});
+
+bot.action(/^reject:(.+)$/, async (ctx) => {
+  const taskId = ctx.match[1];
+  await ctx.answerCbQuery("Rejeitado.");
+  try {
+    const task = await controllerFetch(`/tasks/${taskId}/reject`, { method: "POST" });
+    await ctx.editMessageText(`🚫 Task \`${task.id.slice(0, 8)}\` rejeitada.`, {
+      parse_mode: "Markdown",
+    });
+  } catch (err) {
+    await ctx.editMessageText(`⚠️ Erro ao rejeitar: ${err.message.slice(0, 200)}`);
+  }
 });
 
 bot.launch();

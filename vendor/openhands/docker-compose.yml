@@ -1,0 +1,37 @@
+# Docker Compose para OpenHands (agente de IA local)
+# Docs: https://github.com/All-Hands-AI/OpenHands
+#
+# Uso:
+#   cd vendor/openhands
+#   copy .env.example .env   (e preencha OPENHANDS_LLM_API_KEY)
+#   docker compose up -d
+#
+# Interface web: http://localhost:3000
+# API REST:      http://localhost:3000/api
+
+services:
+  openhands:
+    image: ghcr.io/all-hands-ai/openhands:0.28
+    container_name: openhands
+    pull_policy: missing
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      SANDBOX_RUNTIME_CONTAINER_IMAGE: ghcr.io/all-hands-ai/runtime:0.28-nikolaik
+      LOG_ALL_EVENTS: "true"
+      OPENHANDS_LLM_MODEL: ${OPENHANDS_LLM_MODEL:-anthropic/claude-3-5-sonnet-20241022}
+      OPENHANDS_LLM_API_KEY: ${OPENHANDS_LLM_API_KEY}
+      OPENHANDS_LLM_BASE_URL: ${OPENHANDS_LLM_BASE_URL:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - openhands-state:/root/.openhands
+      - ${WORKSPACE_DIR:-../../data/openhands-workspace}:/opt/workspace_base
+    networks:
+      - openhands-net
+
+networks:
+  openhands-net:
+
+volumes:
+  openhands-state:

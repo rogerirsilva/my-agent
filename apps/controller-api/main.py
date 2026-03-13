@@ -20,6 +20,7 @@ import yaml
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
@@ -237,6 +238,264 @@ class TaskCreate(BaseModel):
 
 
 # ── Rotas ─────────────────────────────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/ui", response_class=HTMLResponse)
+def settings_ui():
+    """Página de configuração do LLM — lista modelos Ollama disponíveis localmente."""
+    api_key = CONTROLLER_API_KEY or ""
+    return HTMLResponse(content=f"""<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>my-agent — Configurações LLM</title>
+<style>
+  :root {{
+    --bg: #0f1117; --panel: #1a1d27; --border: #2d3148;
+    --accent: #6e56cf; --accent2: #3d9eff; --text: #e2e4f0;
+    --muted: #8b8fa8; --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 2rem 1rem; }}
+  .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 2rem; width: 100%; max-width: 560px; }}
+  h1 {{ font-size: 1.3rem; font-weight: 700; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.5rem; }}
+  .subtitle {{ color: var(--muted); font-size: 0.85rem; margin-bottom: 2rem; }}
+  label {{ display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; margin-top: 1.2rem; }}
+  select, input {{ width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 0.65rem 0.85rem; font-size: 0.95rem; outline: none; transition: border-color 0.15s; }}
+  select:focus, input:focus {{ border-color: var(--accent); }}
+  select option {{ background: var(--panel); }}
+  .provider-tabs {{ display: flex; gap: 0.75rem; margin-top: 0.5rem; }}
+  .tab {{ flex: 1; padding: 0.75rem; border: 2px solid var(--border); border-radius: 10px; cursor: pointer; text-align: center; font-size: 0.9rem; font-weight: 600; transition: all 0.15s; background: var(--bg); color: var(--muted); }}
+  .tab:hover {{ border-color: var(--accent); color: var(--text); }}
+  .tab.active {{ border-color: var(--accent); background: rgba(110,86,207,0.15); color: var(--text); }}
+  .tab .icon {{ font-size: 1.4rem; display: block; margin-bottom: 0.25rem; }}
+  .tab .badge {{ display: inline-block; background: var(--green); color: #000; font-size: 0.65rem; font-weight: 700; border-radius: 4px; padding: 1px 5px; margin-left: 4px; vertical-align: middle; }}
+  .section {{ margin-top: 1rem; }}
+  .section.hidden {{ display: none; }}
+  .model-grid {{ display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }}
+  .model-btn {{ display: flex; align-items: center; gap: 0.75rem; background: var(--bg); border: 2px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; cursor: pointer; transition: all 0.15s; text-align: left; color: var(--text); font-size: 0.9rem; }}
+  .model-btn:hover {{ border-color: var(--accent2); }}
+  .model-btn.selected {{ border-color: var(--green); background: rgba(34,197,94,0.08); }}
+  .model-btn .mname {{ font-weight: 600; }}
+  .model-btn .msize {{ color: var(--muted); font-size: 0.78rem; }}
+  .model-btn .check {{ margin-left: auto; color: var(--green); font-size: 1.1rem; opacity: 0; }}
+  .model-btn.selected .check {{ opacity: 1; }}
+  .no-models {{ color: var(--yellow); background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 1rem; font-size: 0.88rem; line-height: 1.6; }}
+  .no-models code {{ background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-family: monospace; }}
+  .apply-btn {{ width: 100%; margin-top: 1.5rem; padding: 0.85rem; background: var(--accent); border: none; border-radius: 8px; color: #fff; font-size: 1rem; font-weight: 700; cursor: pointer; transition: opacity 0.15s; }}
+  .apply-btn:hover {{ opacity: 0.85; }}
+  .apply-btn:disabled {{ opacity: 0.4; cursor: not-allowed; }}
+  .status {{ margin-top: 1rem; padding: 0.85rem 1rem; border-radius: 8px; font-size: 0.88rem; display: none; }}
+  .status.ok {{ background: rgba(34,197,94,0.12); border: 1px solid var(--green); color: var(--green); display: block; }}
+  .status.err {{ background: rgba(239,68,68,0.12); border: 1px solid var(--red); color: var(--red); display: block; }}
+  .active-badge {{ display: inline-flex; align-items: center; gap: 0.4rem; background: rgba(61,158,255,0.12); border: 1px solid rgba(61,158,255,0.4); color: var(--accent2); border-radius: 6px; padding: 0.4rem 0.75rem; font-size: 0.82rem; margin-bottom: 1.5rem; }}
+  .spin {{ display: inline-block; animation: spin 1s linear infinite; }}
+  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+  .adv-section {{ border-top: 1px solid var(--border); margin-top: 1.5rem; padding-top: 1.2rem; }}
+  .adv-toggle {{ color: var(--muted); font-size: 0.82rem; cursor: pointer; user-select: none; }}
+  .adv-toggle:hover {{ color: var(--text); }}
+  .cloud-note {{ color: var(--muted); font-size: 0.82rem; line-height: 1.6; margin-top: 0.5rem; background: rgba(255,255,255,0.03); border-radius: 6px; padding: 0.75rem; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>⚙️ my-agent — LLM</h1>
+  <p class="subtitle">Configurações do modelo de linguagem para o OpenHands</p>
+
+  <div id="activeBadge" class="active-badge"><span class="spin">⏳</span> Carregando...</div>
+
+  <label>Provedor</label>
+  <div class="provider-tabs">
+    <div class="tab active" id="tab-ollama" onclick="selectProvider('ollama')">
+      <span class="icon">🏠</span>
+      Ollama LOCAL
+      <span class="badge" id="local-count" style="display:none">0</span>
+    </div>
+    <div class="tab" id="tab-groq" onclick="selectProvider('groq')">
+      <span class="icon">⚡</span>
+      Groq
+    </div>
+    <div class="tab" id="tab-other" onclick="selectProvider('other')">
+      <span class="icon">☁️</span>
+      Outro
+    </div>
+  </div>
+
+  <!-- OLLAMA -->
+  <div class="section" id="sec-ollama">
+    <label>Modelos instalados localmente</label>
+    <div id="model-grid" class="model-grid">
+      <div style="color:var(--muted);font-size:0.88rem">⏳ Consultando Ollama...</div>
+    </div>
+  </div>
+
+  <!-- GROQ -->
+  <div class="section hidden" id="sec-groq">
+    <div class="cloud-note">
+      Groq oferece modelos rápidos na nuvem.<br>
+      ⚠️ Plano free: 12.000 tokens/min — pode atingir rate limit em tarefas longas.<br>
+      Obtenha sua chave em <a href="https://console.groq.com/keys" target="_blank" style="color:var(--accent2)">console.groq.com</a>
+    </div>
+    <label>Modelo</label>
+    <select id="groq-model">
+      <option value="groq/llama-3.3-70b-versatile">llama-3.3-70b-versatile (recomendado)</option>
+      <option value="groq/llama-3.1-8b-instant">llama-3.1-8b-instant (mais rápido)</option>
+      <option value="groq/mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+      <option value="groq/gemma2-9b-it">gemma2-9b-it</option>
+    </select>
+    <label>API Key</label>
+    <input type="password" id="groq-key" placeholder="gsk_..." />
+  </div>
+
+  <!-- OUTRO -->
+  <div class="section hidden" id="sec-other">
+    <label>Modelo (formato litellm)</label>
+    <input type="text" id="other-model" placeholder="ex: openai/gpt-4o" />
+    <label>Base URL (opcional)</label>
+    <input type="text" id="other-url" placeholder="ex: http://localhost:1234/v1" />
+    <label>API Key (opcional)</label>
+    <input type="password" id="other-key" placeholder="sk-..." />
+  </div>
+
+  <button class="apply-btn" id="applyBtn" onclick="applySettings()">Aplicar configuração</button>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+const API = '';
+const HEADERS = {{'Content-Type': 'application/json', 'x-api-key': '{api_key}'}};
+
+let selectedProvider = 'ollama';
+let selectedModel = '';
+let ollamaModels = [];
+
+async function init() {{
+  try {{
+    const r = await fetch(API + '/providers', {{headers: HEADERS}});
+    const data = await r.json();
+    const active = data.active || {{}};
+    const ollama = data.ollama || {{}};
+
+    // Badge ativo
+    const badge = document.getElementById('activeBadge');
+    const icon = active.provider === 'ollama' ? '🏠' : '⚡';
+    badge.innerHTML = `${{icon}} Ativo: <strong style="margin-left:4px">${{active.model}}</strong>`;
+
+    // Conta modelos locais
+    ollamaModels = ollama.models || [];
+    const cnt = document.getElementById('local-count');
+    if (ollamaModels.length > 0) {{
+      cnt.textContent = ollamaModels.length;
+      cnt.style.display = 'inline-block';
+    }}
+
+    renderOllamaModels(active.model);
+
+    // Pré-seleciona o provedor ativo
+    if (active.provider !== 'ollama') selectProvider(active.provider === 'groq' ? 'groq' : 'other');
+  }} catch(e) {{
+    document.getElementById('activeBadge').innerHTML = '⚠️ Controller offline';
+  }}
+}}
+
+function renderOllamaModels(activeModel) {{
+  const grid = document.getElementById('model-grid');
+  if (!ollamaModels.length) {{
+    grid.innerHTML = `<div class="no-models">
+      ⚠️ Nenhum modelo LLM local instalado.<br><br>
+      Para baixar um modelo abra um terminal e execute:<br>
+      <code>ollama pull llama3</code><br>
+      <code>ollama pull mistral</code><br>
+      <code>ollama pull phi3</code><br><br>
+      Depois recarregue esta página.
+    </div>`;
+    return;
+  }}
+  grid.innerHTML = ollamaModels.map(m => {{
+    const name = m.name || m;
+    const isActive = activeModel === 'ollama/' + name || activeModel === name;
+    if (isActive && !selectedModel) selectedModel = name;
+    return `<button class="model-btn ${{isActive ? 'selected' : ''}}" onclick="selectModel(this, '${{name}}')" id="mbtn-${{name.replace(/[:.]/g,'_')}}">
+      <span>🤖</span>
+      <span><span class="mname">${{name}}</span></span>
+      <span class="check">✓</span>
+    </button>`;
+  }}).join('');
+}}
+
+function selectModel(el, name) {{
+  document.querySelectorAll('.model-btn').forEach(b => b.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedModel = name;
+  setStatus('', '');
+}}
+
+function selectProvider(p) {{
+  selectedProvider = p;
+  ['ollama','groq','other'].forEach(id => {{
+    document.getElementById('tab-' + id).classList.toggle('active', id === p);
+    document.getElementById('sec-' + id).classList.toggle('hidden', id !== p);
+  }});
+}}
+
+function setStatus(msg, type) {{
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status' + (type ? ' ' + type : '');
+}}
+
+async function applySettings() {{
+  const btn = document.getElementById('applyBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Aplicando...';
+  setStatus('', '');
+
+  let body;
+  if (selectedProvider === 'ollama') {{
+    if (!selectedModel) {{ setStatus('Selecione um modelo primeiro.', 'err'); btn.disabled=false; btn.textContent='Aplicar configuração'; return; }}
+    body = {{provider: 'ollama', model: selectedModel}};
+  }} else if (selectedProvider === 'groq') {{
+    const key = document.getElementById('groq-key').value.trim();
+    const model = document.getElementById('groq-model').value;
+    if (!key) {{ setStatus('Informe a API Key do Groq.', 'err'); btn.disabled=false; btn.textContent='Aplicar configuração'; return; }}
+    body = {{provider: 'groq', model, api_key: key}};
+  }} else {{
+    body = {{
+      provider: 'other',
+      model: document.getElementById('other-model').value.trim(),
+      api_key: document.getElementById('other-key').value.trim(),
+      base_url: document.getElementById('other-url').value.trim(),
+    }};
+    if (!body.model) {{ setStatus('Informe o nome do modelo.', 'err'); btn.disabled=false; btn.textContent='Aplicar configuração'; return; }}
+  }}
+
+  try {{
+    const r = await fetch(API + '/settings/llm', {{method: 'POST', headers: HEADERS, body: JSON.stringify(body)}});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || JSON.stringify(data));
+    const sync = data.openhands_sync === 'ok' ? '✅ OpenHands sincronizado' : '⚠️ ' + data.openhands_sync;
+    setStatus(`✅ Modelo alterado para ${{data.model}} — ${{sync}}`, 'ok');
+    // Atualiza badge
+    document.getElementById('activeBadge').innerHTML = `🏠 Ativo: <strong style="margin-left:4px">${{data.model}}</strong>`;
+  }} catch(e) {{
+    setStatus('Erro: ' + e.message, 'err');
+  }}
+
+  btn.disabled = false;
+  btn.textContent = 'Aplicar configuração';
+}}
+
+init();
+</script>
+</body>
+</html>
+""")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}

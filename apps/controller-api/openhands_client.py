@@ -213,9 +213,11 @@ def run_task_sync(prompt: str, timeout_sec: int = 300) -> dict:
         if not conv_id:
             return {"error": f"OpenHands não retornou conversation_id: {data}"}
 
-        # 2. Polling até STOPPED
-        deadline      = time.time() + timeout_sec
-        poll_interval = 8
+        # 2. Polling até STOPPED — trata RATE_LIMITED e ERROR explicitamente
+        deadline           = time.time() + timeout_sec
+        poll_interval      = 8
+        rate_limited_since = None
+
         while time.time() < deadline:
             time.sleep(poll_interval)
             try:
@@ -227,12 +229,52 @@ def run_task_sync(prompt: str, timeout_sec: int = 300) -> dict:
                 continue
             if not status_resp.ok:
                 continue
-            if status_resp.json().get("status") == "STOPPED":
+
+            status = status_resp.json().get("status", "")
+
+            if status == "STOPPED":
                 break
+
+            elif status == "ERROR":
+                # Erro definitivo — lê trajectory para dar detalhes
+                traj = requests.get(
+                    f"{OPENHANDS_URL}/api/conversations/{conv_id}/trajectory",
+                    timeout=30,
+                )
+                raw    = traj.json() if traj.ok else {}
+                events = raw.get("trajectory", raw) if isinstance(raw, dict) else raw
+                output = _extract_output(events if isinstance(events, list) else [])
+                return {
+                    "error": "OpenHands encerrou com ERROR.",
+                    "output": output or "(sem output)",
+                    "conv_id": conv_id,
+                    "state": "ERROR",
+                }
+
+            elif status == "RATE_LIMITED":
+                # Rate limit temporário — OpenHands retentará sozinho.
+                # Extende o deadline em até 120s para dar tempo de recuperar.
+                if rate_limited_since is None:
+                    rate_limited_since = time.time()
+                    deadline = max(deadline, time.time() + 120)
+                # Volta a verificar a cada 15s enquanto rate-limited
+                time.sleep(max(0, min(15, deadline - time.time())))
+                continue
+
         else:
+            if rate_limited_since:
+                return {
+                    "error": (
+                        "⚠️ Rate limit do Groq atingido e não recuperado.\n"
+                        "Use /setmodel para trocar para Ollama LOCAL (sem limites de taxa)."
+                    ),
+                    "conv_id": conv_id,
+                    "state": "RATE_LIMITED",
+                }
             return {
                 "error": f"Timeout: OpenHands não concluiu em {timeout_sec}s.",
                 "conv_id": conv_id,
+                "state": "TIMEOUT",
             }
 
         # 3. Extrai output da trajectory (com retry)
@@ -257,17 +299,6 @@ def run_task_sync(prompt: str, timeout_sec: int = 300) -> dict:
 
     except Exception as exc:
         return {"error": str(exc)}
-    """
-    Submete uma tarefa ao OpenHands e aguarda o resultado (polling REST).
-
-    Fluxo:
-      1. POST /api/conversations  → obtém conversation_id
-      2. Polling GET /api/conversations/{id} até status == STOPPED
-      3. GET /api/conversations/{id}/trajectory → extrai mensagens do agente
-
-    Retorna dict com chave 'output' (str) ou 'error' (str).
-    """
-    if not _is_available():
         return {"error": _UNAVAILABLE_MSG.format(url=OPENHANDS_URL)}
 
     try:

@@ -182,8 +182,19 @@ def _execute_task_sync(task_id: str) -> dict:
     elif task["type"] == "openhands":
         from openhands_client import run_task_sync
         result = run_task_sync(task["command"], timeout_sec=timeout_sec)
-        task["result"] = str(result)[:max_chars]
-        task["status"] = "done" if "error" not in result else "failed"
+        state  = result.get("state", "")
+        if "error" in result:
+            # Mensagem amigável para rate limit
+            if state in ("RATE_LIMITED", "ERROR"):
+                task["result"] = result["error"]
+                if result.get("output"):
+                    task["result"] += f"\n\nOutput parcial:\n{result['output']}"
+            else:
+                task["result"] = result["error"]
+            task["status"] = "failed"
+        else:
+            task["result"] = str(result.get("output", ""))[:max_chars]
+            task["status"] = "done"
 
     tasks = _load_tasks()
     tasks[task_id] = task

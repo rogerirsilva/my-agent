@@ -1,10 +1,15 @@
 """
 Cliente OpenHands para o Controller API.
 
-Documentação: https://github.com/All-Hands-AI/OpenHands
-Inicia o servidor com: vendor/openhands/docker-compose.yml
+API verificada na versão 0.28:
+  POST   /api/conversations            — cria conversa (campo: initial_user_msg)
+  GET    /api/conversations/{id}       — status: RUNNING | STOPPED
+  GET    /api/conversations/{id}/trajectory — lista de eventos (output)
+  GET    /health                       — health check
+  GET    /api/options/models           — lista modelos disponíveis
 
-Este módulo será complementado quando OpenHands estiver rodando localmente.
+Inicia o servidor com:
+  cd vendor/openhands && docker compose up -d
 """
 
 import os
@@ -13,55 +18,92 @@ import requests
 
 OPENHANDS_URL = os.getenv("OPENHANDS_URL", "http://127.0.0.1:3000").rstrip("/")
 
+_UNAVAILABLE_MSG = (
+    "OpenHands inacessível em {url}.\n"
+    "Inicie com:\n"
+    "  cd vendor/openhands\n"
+    "  docker compose up -d\n"
+    "Depois aguarde ~30s e tente novamente."
+)
+
+
+def _is_available() -> bool:
+    try:
+        r = requests.get(f"{OPENHANDS_URL}/health", timeout=5)
+        return r.ok
+    except requests.exceptions.ConnectionError:
+        return False
+
 
 def run_task_sync(prompt: str, timeout_sec: int = 300) -> dict:
     """
-    Submete uma tarefa ao OpenHands e aguarda o resultado (polling síncrono).
-    Retorna dict com chave 'output' ou 'error'.
+    Submete uma tarefa ao OpenHands e aguarda o resultado (polling REST).
+
+    Fluxo:
+      1. POST /api/conversations  → obtém conversation_id
+      2. Polling GET /api/conversations/{id} até status == STOPPED
+      3. GET /api/conversations/{id}/trajectory → extrai mensagens do agente
+
+    Retorna dict com chave 'output' (str) ou 'error' (str).
     """
-    if not OPENHANDS_URL:
-        return {"error": "OPENHANDS_URL não configurado. Inicie com vendor/openhands/docker-compose.yml"}
+    if not _is_available():
+        return {"error": _UNAVAILABLE_MSG.format(url=OPENHANDS_URL)}
 
     try:
-        # 1. Verifica se o OpenHands está disponível
-        health = requests.get(f"{OPENHANDS_URL}/api/options/models", timeout=5)
-        if not health.ok:
-            return {"error": f"OpenHands não respondeu ({health.status_code}). Verifique se está rodando."}
-    except requests.exceptions.ConnectionError:
-        return {"error": f"OpenHands inacessível em {OPENHANDS_URL}. Inicie com: docker compose up -d (em vendor/openhands/)"}
-
-    try:
-        # 2. Cria uma conversa
+        # 1. Cria conversa
         resp = requests.post(
             f"{OPENHANDS_URL}/api/conversations",
-            json={"initial_user_message": prompt},
+            # Campo correto validado no schema OpenAPI 0.28
+            json={"initial_user_msg": prompt},
             timeout=30,
         )
         resp.raise_for_status()
-        conv = resp.json()
-        conv_id = conv.get("conversation_id") or conv.get("id")
+        data = resp.json()
+        conv_id = data.get("conversation_id")
         if not conv_id:
-            return {"error": f"Resposta inesperada do OpenHands: {conv}"}
+            return {"error": f"OpenHands não retornou conversation_id: {data}"}
 
-        # 3. Polling até conclusão
+        # 2. Polling até STOPPED
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
-            time.sleep(3)
+            time.sleep(4)
             status_resp = requests.get(
-                f"{OPENHANDS_URL}/api/conversations/{conv_id}", timeout=10
+                f"{OPENHANDS_URL}/api/conversations/{conv_id}",
+                timeout=10,
             )
             if not status_resp.ok:
                 continue
-            data = status_resp.json()
-            state = data.get("status") or data.get("state", "")
-            if state in ("finished", "error", "stopped", "complete"):
-                # Extrai mensagens do agente como output
-                messages = data.get("messages") or []
-                agent_msgs = [m.get("content", "") for m in messages if m.get("role") == "assistant"]
-                output = "\n\n".join(agent_msgs) if agent_msgs else str(data)
-                return {"output": output, "state": state, "conv_id": conv_id}
+            conv_data = status_resp.json()
+            # ConversationStatus enum: "RUNNING" | "STOPPED"
+            if conv_data.get("status") == "STOPPED":
+                break
+        else:
+            return {
+                "error": f"Timeout: OpenHands não concluiu em {timeout_sec}s.",
+                "conv_id": conv_id,
+            }
 
-        return {"error": f"Timeout: OpenHands não concluiu em {timeout_sec}s. conv_id={conv_id}"}
+        # 3. Extrai output da trajectory
+        traj_resp = requests.get(
+            f"{OPENHANDS_URL}/api/conversations/{conv_id}/trajectory",
+            timeout=20,
+        )
+        if not traj_resp.ok:
+            return {"error": f"Falha ao obter trajectory ({traj_resp.status_code})", "conv_id": conv_id}
+
+        events = traj_resp.json()  # lista de eventos
+        # Filtra mensagens do agente (type == "message", source == "agent")
+        agent_messages = [
+            e.get("message") or e.get("content") or ""
+            for e in (events if isinstance(events, list) else [])
+            if e.get("source") == "agent" or e.get("role") == "assistant"
+        ]
+        output = "\n\n".join(m for m in agent_messages if m)
+        if not output:
+            # fallback: retorna último evento de qualquer tipo
+            output = str(events[-1]) if events else "(sem output)"
+
+        return {"output": output, "conv_id": conv_id, "state": "STOPPED"}
 
     except Exception as exc:
         return {"error": str(exc)}

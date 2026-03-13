@@ -1,13 +1,19 @@
-# Docker Compose para OpenHands (agente de IA local)
+# Docker Compose para OpenHands v0.28
 # Docs: https://github.com/All-Hands-AI/OpenHands
+#
+# Pré-requisitos:
+#   - Docker Desktop rodando
+#   - Arquivo .env preenchido (copie .env.example → .env)
 #
 # Uso:
 #   cd vendor/openhands
-#   copy .env.example .env   (e preencha OPENHANDS_LLM_API_KEY)
+#   copy .env.example .env    (Windows) | cp .env.example .env (Linux/Mac)
+#   # edite .env com sua LLM API key
 #   docker compose up -d
 #
 # Interface web: http://localhost:3000
 # API REST:      http://localhost:3000/api
+# Swagger:       http://localhost:3000/openapi.json
 
 services:
   openhands:
@@ -23,7 +29,10 @@ services:
       OPENHANDS_LLM_MODEL: ${OPENHANDS_LLM_MODEL:-anthropic/claude-3-5-sonnet-20241022}
       OPENHANDS_LLM_API_KEY: ${OPENHANDS_LLM_API_KEY}
       OPENHANDS_LLM_BASE_URL: ${OPENHANDS_LLM_BASE_URL:-}
+      # Necessário no Windows: mapear o socket Docker via TCP
+      SANDBOX_LOCAL_RUNTIME_URL: ${SANDBOX_LOCAL_RUNTIME_URL:-}
     volumes:
+      # Windows: Docker Desktop expõe o socket automaticamente para containers
       - /var/run/docker.sock:/var/run/docker.sock
       - openhands-state:/root/.openhands
       - ${WORKSPACE_DIR:-../../data/openhands-workspace}:/opt/workspace_base
@@ -32,6 +41,7 @@ services:
 
 networks:
   openhands-net:
+    driver: bridge
 
 volumes:
   openhands-state:

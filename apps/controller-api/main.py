@@ -18,8 +18,11 @@ from threading import Lock
 
 import yaml
 import requests
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
+
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 # ── Configuração ──────────────────────────────────────────────────────────────
 DATA_DIR = Path(os.getenv("DATA_DIR", "../../data")).resolve()

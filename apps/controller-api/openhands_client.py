@@ -16,6 +16,10 @@ Inicia o servidor com:
 import os
 import time
 import requests
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 OPENHANDS_URL     = os.getenv("OPENHANDS_URL", "http://127.0.0.1:3000").rstrip("/")
 OPENHANDS_LLM_KEY = os.getenv("OPENHANDS_LLM_API_KEY", "")

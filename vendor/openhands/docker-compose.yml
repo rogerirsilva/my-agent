@@ -37,8 +37,10 @@ services:
     networks:
       - openhands-net
 
-  # Ollama — modelo local, sem API key (use: docker compose --profile ollama up -d)
-  # Após subir: docker exec ollama ollama pull llama3.2
+  # Ollama — container Docker (opcional)
+  # ATENÇÃO: se o Ollama já estiver instalado nativamente no host, não suba este container.
+  # Nesse caso, use OPENHANDS_LLM_BASE_URL=http://host.docker.internal:11434 no .env
+  # Para usar este container: docker compose --profile ollama up -d
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -50,6 +52,14 @@ services:
       - ollama-data:/root/.ollama
     networks:
       - openhands-net
+    # Descomente para usar GPU NVIDIA:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
 networks:
   openhands-net:

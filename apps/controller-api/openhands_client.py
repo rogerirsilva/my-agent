@@ -21,9 +21,13 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
-OPENHANDS_URL     = os.getenv("OPENHANDS_URL", "http://127.0.0.1:3000").rstrip("/")
-OPENHANDS_LLM_KEY = os.getenv("OPENHANDS_LLM_API_KEY", "")
-OPENHANDS_LLM_MODEL = os.getenv("OPENHANDS_LLM_MODEL", "groq/llama-3.3-70b-versatile")
+OPENHANDS_URL          = os.getenv("OPENHANDS_URL", "http://127.0.0.1:3000").rstrip("/")
+OPENHANDS_LLM_KEY      = os.getenv("OPENHANDS_LLM_API_KEY", "")
+OPENHANDS_LLM_MODEL    = os.getenv("OPENHANDS_LLM_MODEL", "groq/llama-3.3-70b-versatile")
+OPENHANDS_LLM_BASE_URL = os.getenv("OPENHANDS_LLM_BASE_URL", "")
+
+# URL local do Ollama (acessível do host; dentro do Docker usa http://ollama:11434)
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 
 _UNAVAILABLE_MSG = (
     "OpenHands inacessível em {url}.\n"
@@ -42,22 +46,70 @@ def _is_available() -> bool:
         return False
 
 
-def _ensure_settings() -> str | None:
-    """Garante que as settings de LLM estejam salvas. Retorna None se OK, mensagem de erro se falhar."""
-    check = requests.get(f"{OPENHANDS_URL}/api/settings", timeout=10)
-    if check.status_code == 200:
-        return None  # já configurado
+def list_ollama_models() -> list[str]:
+    """Retorna modelos instalados no Ollama, ou lista vazia se indisponível."""
+    try:
+        r = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
+        if r.ok:
+            return [m["name"] for m in r.json().get("models", [])]
+    except Exception:
+        pass
+    return []
 
-    if not OPENHANDS_LLM_KEY:
+
+def _resolve_model() -> tuple[str, str, str]:
+    """
+    Resolve modelo, api_key e base_url efetivos.
+    Se OPENHANDS_LLM_MODEL == 'ollama/auto', escolhe o primeiro modelo disponível no Ollama.
+    Retorna (model, api_key, base_url).
+    """
+    model    = OPENHANDS_LLM_MODEL
+    api_key  = OPENHANDS_LLM_KEY
+    base_url = OPENHANDS_LLM_BASE_URL
+
+    # Auto-detecta modelo Ollama
+    if model == "ollama/auto":
+        available = list_ollama_models()
+        if not available:
+            model = "ollama/llama3.2"  # fallback; será erro se não instalado
+        else:
+            # Prefere modelos de código, cai para o primeiro disponível
+            preferred = ["qwen2.5-coder", "qwen2.5", "codellama", "llama3", "llama3.2", "mistral"]
+            model = next(
+                (f"ollama/{m}" for p in preferred for m in available if p in m.lower()),
+                f"ollama/{available[0]}",
+            )
+
+    # Para qualquer modelo ollama, ajusta base_url e api_key automaticamente
+    if model.startswith("ollama/"):
+        if not base_url:
+            # host.docker.internal: alcança Ollama nativo no Windows/Mac via Docker Desktop
+            base_url = "http://host.docker.internal:11434"
+        if not api_key:
+            api_key = "ollama"
+
+    return model, api_key, base_url
+
+
+def _ensure_settings() -> str | None:
+    """
+    Sempre empurra as settings de LLM para o OpenHands.
+    Garante que modelo/chave/base_url atuais estejam configurados.
+    Retorna None se OK, mensagem de erro se falhar.
+    """
+    model, api_key, base_url = _resolve_model()
+
+    is_ollama = model.startswith("ollama/")
+    if not is_ollama and not api_key:
         return (
             "OPENHANDS_LLM_API_KEY não configurado no controller .env.\n"
-            "Adicione a chave Groq/Gemini e reinicie o controller."
+            "Adicione a chave Groq/Gemini ou configure OPENHANDS_LLM_MODEL=ollama/auto e reinicie."
         )
 
     payload = {
-        "llm_model": OPENHANDS_LLM_MODEL,
-        "llm_api_key": OPENHANDS_LLM_KEY,
-        "llm_base_url": "",
+        "llm_model": model,
+        "llm_api_key": api_key,
+        "llm_base_url": base_url,
         "agent": "CodeActAgent",
         "language": "pt",
         "enable_default_condenser": True,

@@ -91,7 +91,8 @@ bot.start((ctx) =>
     "/status — informações do host\n" +
     "/exec \\<secret\\> \\<comando\\> — executa no host \\(via controller\\)\n" +
     "/think \\<tarefa\\> — envia para o OpenHands\n" +
-    "/tasks — últimas tarefas",
+    "/tasks — últimas tarefas\n" +
+    "/providers — provedores LLM disponíveis",
     { parse_mode: "MarkdownV2" }
   )
 );
@@ -197,6 +198,36 @@ bot.command("tasks", async (ctx) => {
   await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
 });
 
+bot.command("providers", async (ctx) => {
+  let data;
+  try {
+    data = await controllerFetch("/providers");
+  } catch (err) {
+    return ctx.reply("\u26a0\ufe0f Erro ao consultar provedores: " + err.message.slice(0, 200));
+  }
+
+  const active = data.active || {};
+  const ollama = data.ollama || {};
+
+  const icon = active.provider === "ollama" ? "\uD83D\uDCBB" : "\u2601\ufe0f";
+  let msg = `${icon} *Provedor ativo:* \`${active.model}\`\n`;
+  if (active.base_url && active.provider === "ollama") {
+    msg += `\u2514 URL: \`${active.base_url}\`\n`;
+  }
+  msg += "\n";
+
+  if (ollama.available) {
+    msg += `*Ollama* (local) — ${ollama.models.length} modelo(s):\n`;
+    msg += ollama.models.map((m) => `  \u2022 \`${m}\``).join("\n");
+    msg += "\n\nPara usar: defina \`OPENHANDS_LLM_MODEL=ollama/<nome>\` no controller .env";
+  } else {
+    msg += "*Ollama* (local) — nenhum modelo instalado.\n";
+    msg += "Execute para baixar um modelo:\n";
+    msg += "```\ndocker exec ollama ollama pull qwen2.5:7b\n```";
+  }
+
+  await ctx.reply(msg, { parse_mode: "Markdown" });
+});
 // ── Callbacks teclado inline ──────────────────────────────────────────────────
 
 bot.action(/^approve:(.+)$/, async (ctx) => {

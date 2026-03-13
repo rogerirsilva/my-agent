@@ -231,6 +231,31 @@ def health():
     return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
 
 
+@app.get("/providers", dependencies=[Protected])
+def list_providers():
+    """Lista provedores LLM disponíveis: Ollama local + configuração ativa do OpenHands."""
+    from openhands_client import list_ollama_models, _resolve_model, OLLAMA_HOST
+    model, _, base_url = _resolve_model()
+    ollama_models = list_ollama_models()
+    return {
+        "active": {
+            "model": model,
+            "base_url": base_url or "(padrão do provedor)",
+            "provider": "ollama" if model.startswith("ollama/") else "cloud",
+        },
+        "ollama": {
+            "available": bool(ollama_models),
+            "host": OLLAMA_HOST,
+            "models": ollama_models,
+            "hint": (
+                "Nenhum modelo instalado. Execute:\n"
+                "  docker exec ollama ollama pull qwen2.5:7b\n"
+                "Para usar: defina OPENHANDS_LLM_MODEL=ollama/qwen2.5:7b no controller .env"
+            ) if not ollama_models else None,
+        },
+    }
+
+
 @app.post("/tasks", status_code=201, dependencies=[Protected])
 def create_task(body: TaskCreate):
     command = (body.command or "").strip()
